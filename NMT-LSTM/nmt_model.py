@@ -76,17 +76,16 @@ class NMT(nn.Module):
         ###         https://pytorch.org/docs/stable/nn.html#torch.nn.Dropout
         self.encoder = nn.LSTM(input_size=embed_size, hidden_size=self.hidden_size,
                                 bidirectional=True,dropout=self.dropout_rate)
-        self.decoder = nn.LSTMCell(input_size=embed_size + self.hidden_size, hidden_size=self.hidden_size)
-        # 编码器和解码器之间H,C的转换
+        self.decoder = nn.LSTMCell(input_size=(embed_size + self.hidden_size), hidden_size=self.hidden_size)
         self.h_projection = nn.Linear(self.hidden_size * 2, self.hidden_size, bias=False)
         self.c_projection = nn.Linear(self.hidden_size * 2, self.hidden_size, bias=False)
         # 注意力
         self.att_projection = nn.Linear(self.hidden_size * 2, self.hidden_size, bias=False)
-        # 注意力与输出结合
+        # 注意力与输出融合输出
         self.combined_output_projection = nn.Linear(self.hidden_size * 3, self.hidden_size, bias=False)
 
-        self.target_vocab_projection = nn.Linear(self.hidden_size, self.model_embeddings.target.weight.shape[0],
-                                                 bias=False)
+        self.target_vocab_projection = nn.Linear(self.hidden_size, self.model_embeddings.target.weight.shape[0])
+
         self.dropout = nn.Dropout(p=self.dropout_rate)
         ### END YOUR CODE
 
@@ -262,7 +261,7 @@ class NMT(nn.Module):
                                             enc_hiddens_proj, enc_masks)
             combined_outputs.append(o_t)
             o_prev = o_t
-        combined_outputs = torch.stack(combined_outputs, dim=0)
+        combined_outputs = torch.stack(combined_outputs)
 
         ### END YOUR CODE
 
@@ -326,7 +325,7 @@ class NMT(nn.Module):
 
         # Set e_t to -inf where enc_masks has 1
         if enc_masks is not None:
-            e_t.data.masked_fill_(enc_masks.byte(), -float('inf'))
+            e_t.data.masked_fill_(enc_masks.to(torch.bool), -float('inf'))
 
         ### YOUR CODE HERE (~6 Lines)
         ### TODO:
@@ -357,7 +356,7 @@ class NMT(nn.Module):
         ###         https://pytorch.org/docs/stable/torch.html#torch.tanh
         alpha_t = nn.functional.softmax(e_t,dim=1)
         a_t = torch.squeeze(torch.bmm(torch.unsqueeze(alpha_t, 1), enc_hiddens),1)  # context vector
-        U_t = torch.cat((dec_hidden,a_t),dim=1)
+        U_t = torch.cat((a_t,dec_hidden),dim=1)  # !
         V_t = self.combined_output_projection(U_t)
         O_t = self.dropout(torch.tanh(V_t))
         ### END YOUR CODE
@@ -414,8 +413,8 @@ class NMT(nn.Module):
                                                      src_encodings.size(2))
 
             exp_src_encodings_att_linear = src_encodings_att_linear.expand(hyp_num,
-                                                                           src_encodings_att_linear.size(1),
-                                                                           src_encodings_att_linear.size(2))
+                                    src_encodings_att_linear.size(1),
+                                    src_encodings_att_linear.size(2))
 
             y_tm1 = torch.tensor([self.vocab.tgt[hyp[-1]] for hyp in hypotheses], dtype=torch.long, device=self.device)
             y_t_embed = self.model_embeddings.target(y_tm1)
