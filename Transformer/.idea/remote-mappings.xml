@@ -6,7 +6,7 @@
         <remote-mappings server-id="python@sftp://lixiang@192.168.177.205:22/home/lixiang/anaconda3/bin/python">
           <settings>
             <list>
-              <mapping local-root="$PROJECT_DIR$/.idea" remote-root="/home/lixiang/shuaihaowen/Transformer" />
+              <mapping local-root="$PROJECT_DIR$" remote-root="/home/lixiang/shuaihaowen/Transformer" />
             </list>
           </settings>
         </remote-mappings>
