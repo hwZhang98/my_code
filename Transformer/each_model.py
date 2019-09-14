@@ -1,3 +1,5 @@
+#!/usr/bin/python
+# -*- coding:utf8 -*-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -6,6 +8,7 @@ import math, copy, time
 from torch.autograd import Variable
 import matplotlib.pyplot as plt
 import seaborn
+
 global sizes
 seaborn.set_context(context="talk")
 
@@ -20,33 +23,27 @@ class EncoderDecoder(nn.Module):
 
     def __init__(self, encoder, decoder, src_embed, tgt_embed, generator):
         super(EncoderDecoder, self).__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        self.src_embed = src_embed
-        self.tgt_embed = tgt_embed
-        self.generator = generator
-        global sizes
-        sizes = []
+        self.encoder = encoder  # 编码器
+        self.decoder = decoder  # 解码器
+        self.src_embed = src_embed  # 源语句词嵌入
+        self.tgt_embed = tgt_embed  # 目标语句词嵌入
+        self.generator = generator  # 生成器，生成最终词向量
 
     def forward(self, src, tgt, src_mask, tgt_mask):
         "Take in and process masked src and target sequences."
-        # sizes.append(np.array(self.decode(self.encode(src, src_mask), src_mask, tgt, tgt_mask).size()))
-        # total_nums = 0
-        # for i in range(len(sizes)):
-        #     s = sizes[i]
-        #     nums = np.prod(np.array(s))
-        #     total_nums += nums
-        # print(' intermedite variables: {:3f} M (without backward)'
-        #       .format( total_nums * 2*4 / 1000 / 1000))
-        #
+        '''
+        src:源语句
+        tgt:目标语句
+        src_mask:源语句掩码
+        tgt_mask:目标语句掩码
+        '''
         return self.decode(self.encode(src, src_mask), src_mask, tgt, tgt_mask)
 
     def encode(self, src, src_mask):
-        # sizes.append(np.array(self.encoder(self.src_embed(src), src_mask).size()))
         return self.encoder(self.src_embed(src), src_mask)
 
     def decode(self, memory, src_mask, tgt, tgt_mask):
-        # sizes.append(np.array(self.decoder(self.tgt_embed(tgt), memory, src_mask, tgt_mask).size()))
+        # memory 是解码器传过来的隐层中间状态
         return self.decoder(self.tgt_embed(tgt), memory, src_mask, tgt_mask)
 
 
@@ -63,7 +60,7 @@ class Generator(nn.Module):
 
 
 def clones(module, N):
-    "Produce N identical layers.层"
+    "Produce N identical layers."
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
 
@@ -87,6 +84,7 @@ class LayerNorm(nn.Module):
 
     def __init__(self, features, eps=1e-6):
         super(LayerNorm, self).__init__()
+        # 加入Parameter意味着# 这些参数可以进行不断地学习优化
         self.a_2 = nn.Parameter(torch.ones(features))
         self.b_2 = nn.Parameter(torch.zeros(features))
         self.eps = eps
@@ -165,15 +163,17 @@ def subsequent_mask(size):
     "Mask out subsequent positions."
     attn_shape = (1, size, size)
     subseqent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')  # 这个k=1相当于增加了上三角矩阵0的数量
-    return torch.from_numpy(subseqent_mask) == 0
+    a = (torch.from_numpy(subseqent_mask) == 0)
+    return torch.from_numpy(subseqent_mask) == 0        # 最终返回的是下三角矩阵中0的位置，为True，其余为0
 
 
 def attention(query, key, value, mask=None, dropout=None):
     "Compute 'Scaled Dot Product Attention'"
-    d_k = query.size(-1)
-    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
-    if mask is not None:
+    d_k = query.size(-1)  # size : N (句子个数), 8 (多头注意力数目) , h_size (每个句子中单词的数目) , 64 (向量维度 'd_model' 512/8'h')
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)    # scores 当前的size : N,8,h_size,h_size
+    if mask is not None:          # 而此时如果是tgtmask 则mask 的size: N ,1 （每一头注意力的mask相同）,h_size,h_size
         scores = scores.masked_fill(mask == 0, -1e9)  # 根据mask矩阵把mask位置都填入负值，经过softmax后就会变为0
+        # 所以这上边一步在mask 为tgtmask时同时引入padmask 和sequentmask
     p_attn = F.softmax(scores, dim=-1)
     if dropout is not None:
         p_attn = dropout(p_attn)
@@ -183,12 +183,15 @@ def attention(query, key, value, mask=None, dropout=None):
 class MultiHeadedAttention(nn.Module):
     def __init__(self, h, d_model, dropout=0.1):
         "Take in model size and number of heads."
+        '''
+        h:多头的数目 default:8
+        '''
         super(MultiHeadedAttention, self).__init__()
         assert d_model % h == 0
         # We assume d_v always equals d_k
-        self.d_k = d_model // h
+        self.d_k = d_model // h   # 多头注意力中 ,几个变量的维度是由头数和模型隐层维度决定的
         self.h = h
-        self.linears = clones(nn.Linear(d_model, d_model), 4)
+        self.linears = clones(nn.Linear(d_model, d_model), 4)  # 4个线性层用来产生q,k,v 和最后的组合输出层的权重Wq,Wk,Wv,W
         self.attn = None
         self.dropout = nn.Dropout(p=dropout)
 
@@ -196,10 +199,11 @@ class MultiHeadedAttention(nn.Module):
         if mask is not None:
             # Same mask applied to all h heads.
             mask = mask.unsqueeze(1)
-        nbatches = query.size(0)
+        nbatches = query.size(0)        # 一批有多少个句子
         # 1) Do all the linear projections in batch from d_model => h x d_k
         query, key, value = [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
                              for l, x in zip(self.linears, (query, key, value))]
+                             # 注意这里上面的linears其实包含4个不同的全连接层
         # 2) Apply attention on all the projected vectors in batch.
         x, self.attn = attention(query, key, value, mask=mask,
                                  dropout=self.dropout)
@@ -210,7 +214,7 @@ class MultiHeadedAttention(nn.Module):
 
 class PositionwiseFeedForward(nn.Module):
     "Implements FFN equation."
-
+    # 简单的前馈神经网络,又两个线性层和一个激活层组成
     def __init__(self, d_model, d_ff, dropout=0.1):
         super(PositionwiseFeedForward, self).__init__()
         self.w_1 = nn.Linear(d_model, d_ff)
@@ -243,21 +247,14 @@ class PositionalEncoding(nn.Module):
         position = torch.arange(0., max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0., d_model, 2).float() *  # 这一句要加float()，否则结果会为0
                              -(math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position.float() * div_term)
-        pe[:, 1::2] = torch.cos(position.float() * div_term)
+        pe[:, 0::2] = torch.sin(position.float() * div_term)  # 维度偶数用sin ，奇数用cos
+        pe[:, 1::2] = torch.cos(position.float() * div_term)  # 这样每个单词的相对位置的每个维度都有各自的位置编码
         pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
+        self.register_buffer('pe', pe)   # 把pe变为self.pe
 
     def forward(self, x):
-        y = Variable(self.pe[:, :x.size(1)], requires_grad=False)
+        y = self.pe[:, :x.size(1)].clone().detach().requires_grad_(False)
         x = x + y
 
         return self.dropout(x)
 
-
-# plt.figure(figsize=(15, 5))
-# pe = PositionalEncoding(20, 0)
-# y = pe.forward(Variable(torch.zeros(1, 100, 20)))
-# plt.plot(np.arange(100), y[0, :, 4:8].data.numpy())
-# plt.legend(['dim %d' % p for p in [4, 5, 6, 7]])
-# plt.show()

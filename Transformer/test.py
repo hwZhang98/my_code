@@ -1,5 +1,11 @@
 import torch
-a = [12,23,12,31,23,12,31,23,34,34,53,45]
+a = torch.tensor([1,0,1])
+b = torch.ones((2,3))
+c = torch.nonzero(a==1)
+print(c)
+c = c.squeeze()
+print(b)
 
-print(a[1,5])
+
+
 
