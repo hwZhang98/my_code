@@ -1,16 +1,15 @@
+#!/usr/bin/python
+# -*- coding:utf8 -*-
 from each_model import *
 from Model import *
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import time
-import matplotlib.pyplot as plt
-import seaborn
 from tensorboardX import SummaryWriter
-seaborn.set_context(context="talk")
 from nltk.translate import bleu_score
 import os
+from data_loading import  *
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1,3'
 
@@ -57,7 +56,7 @@ def run_epoch(data_iter, model, loss_compute):
             bleu = valid_bleu_store()
             print('Epoch Step: %d Loss:%f' %
                   (i, loss / batch.ntokens))
-            writer.add_scalars('bleu %d epoch'%epoch,{'bleu':bleu},i)
+            writer.add_scalars('bleu %d epoch' % epoch, {'bleu': bleu}, i)
             # start = time.time()
             tokens = 0
     writer.close()
@@ -160,40 +159,6 @@ class LabelSmoothing(nn.Module):
         return self.criterion(x, true_dist.requires_grad_(False))
 
 
-#  传入数据！！！！！！！！！！！！！！！！！！！！！！！！！
-import spacy
-from torchtext import datasets, data
-
-spacy_de = spacy.load('de')  # nlp =spacy.load('de_core_news_sm')
-spacy_en = spacy.load('en')  # nlp =spacy.load('en_core_web_sm')
-
-
-def tokenize_de(text):
-    return [tok.text for tok in spacy_de.tokenizer(text)]
-
-
-def tokenize_en(text):
-    return [tok.text for tok in spacy_en.tokenizer(text)]
-
-
-BOS_WORD = '<s>'
-EOS_WORD = '</s>'
-BLANK_WORD = "<blank>"
-SRC = data.Field(tokenize=tokenize_de, pad_token=BLANK_WORD)
-TGT = data.Field(tokenize=tokenize_en, init_token=BOS_WORD,
-                 eos_token=EOS_WORD, pad_token=BLANK_WORD)
-print('build_vocab')
-MAX_LEN = 100  # 大于这个长度的数据丢掉
-train, val, test = datasets.IWSLT.splits(
-    exts=('.de', '.en'), fields=(SRC, TGT),
-    filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and
-                          len(vars(x)['trg']) <= MAX_LEN)
-MIN_FREQ = 2  # 出现频率小于这个频率的丢掉
-SRC.build_vocab(train.src, min_freq=MIN_FREQ)
-TGT.build_vocab(train.trg, min_freq=MIN_FREQ)
-print('build_vocab is successful')
-
-
 class MyIterator(data.Iterator):
     def create_batches(self):
         if self.train:
@@ -235,6 +200,8 @@ def greedy_decode(model, src, src_mask, max_len, start_symbol):
             _, next_word = torch.max(prob, dim=1)
             ys = torch.cat((ys, next_word.unsqueeze(-1)), dim=1)
         return ys
+
+
 
 
 class MultiGPULossCompute:
@@ -303,21 +270,26 @@ model.cuda()
 criterion = LabelSmoothing(size=len(TGT.vocab), padding_idx=pad_idx, smoothing=0.1)
 criterion.cuda()
 BATCH_SIZE = 4000  # 每批的句子个数
-train_iter = MyIterator(train, batch_size=BATCH_SIZE, device=0,
-                        repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
-                        batch_size_fn=batch_size_fn, train=True)
-valid_iter = MyIterator(val, batch_size=BATCH_SIZE, device=0,
-                        repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
-                        batch_size_fn=batch_size_fn, train=False)
+# train_iter = MyIterator(train, batch_size=BATCH_SIZE, device=0,
+#                         repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
+#                         batch_size_fn=batch_size_fn, train=True)
+# valid_iter = MyIterator(val, batch_size=BATCH_SIZE, device=0,
+#                         repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
+#                         batch_size_fn=batch_size_fn, train=False)
+train_WMT14_iter = MyIterator(dataset, batch_size=BATCH_SIZE, device=0,
+                              repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
+                              batch_size_fn=batch_size_fn, train=True)
+
 model_par = nn.DataParallel(model, device_ids=devices)
+
 
 def valid_bleu_store():
     total_bleu = []
-    for i, batch in enumerate(valid_iter):  # 完整测试
-        src = batch.src.transpose(0, 1).cuda()    # src ['i','am','a','man','.']
-        trg = batch.trg.transpose(0, 1).cuda()    # trg ['<start>','ha','ha']
+    for i, batch in enumerate(train_WMT14_iter):  # 完整测试
+        src = batch.src.transpose(0, 1).cuda()  # src ['i','am','a','man','.']
+        trg = batch.trg.transpose(0, 1).cuda()  # trg ['<start>','ha','ha']
         src_mask = (src != SRC.vocab.stoi["<blank>"]).unsqueeze(-2).cuda()
-        out = greedy_decode(model, src, src_mask,       # out ['<start>','ha','ha']
+        out = greedy_decode(model, src, src_mask,  # out ['<start>','ha','ha']
                             max_len=60, start_symbol=TGT.vocab.stoi["<s>"])
         # print("Translation:", end="\t")
         hypothesis = [[] for _ in range(out.shape[0])]
@@ -344,7 +316,7 @@ def valid_bleu_store():
             except ZeroDivisionError:
                 pass
         arg_bleu /= len(references)
-        print(len(references) ,'references len')
+        print(len(references), 'references len')
         print('are_bleu:%.4f' % arg_bleu)
         total_bleu.append(arg_bleu)
     print('total_bleu:%.4f:' % (sum(total_bleu) / len(total_bleu)))
@@ -352,27 +324,22 @@ def valid_bleu_store():
 
 
 # 是否训练模型 i = Ture
-i = True
+i = False
 if i:
     model_opt = NoamOpt(model.src_embed[0].d_model, 1, 2000,
                         torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
     for epoch in range(10):
-        print('trian', epoch)
+        print('train', epoch)
         model_par.train()
-        run_epoch((rebatch(pad_idx, b) for b in train_iter),
+        run_epoch((rebatch(pad_idx, b) for b in train_WMT14_iter),
                   model_par,
                   MultiGPULossCompute(model.generator, criterion,
                                       devices=devices, opt=model_opt))
-        # print('开始验证')
-        # model_par.eval()
-        # loss = run_epoch((rebatch(pad_idx, b) for b in valid_iter),
-        #                  model_par,
-        #                  MultiGPULossCompute(model.generator, criterion,
-        #                                      devices=devices, opt=None))
-        # print(loss)
 else:
     # !wget https://s3.amazonaws.com/opennmt-models/iwslt.pt
     model = torch.load("iwslt.pt")
+    model.eval()
+    valid_bleu_store()
 #
 # for i, batch in enumerate(valid_iter):   # 小测试
 #     src = batch.src.transpose(0, 1)[1:2].cuda()  # 第一段，相当于
@@ -398,6 +365,3 @@ else:
 #     bleu = bleu_score.sentence_bleu(references,hypothesis,smoothing_function=func.method7)
 #     print('bleu:{}'.format(bleu))
 #     print()
-
-
-
