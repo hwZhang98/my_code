@@ -11,7 +11,7 @@ from nltk.translate import bleu_score
 import os
 from data_loading import  *
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1,3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 
 # 代码出处:http://nlp.seas.harvard.edu/2018/04/03/attention.html
@@ -114,14 +114,6 @@ def get_std_opt(model):
                    torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
 
 
-# opts = [NoamOpt(512, 1, 4000, None),
-#         NoamOpt(512, 1, 8000, None),
-#         NoamOpt(256, 1, 4000, None)]
-# plt.plot(np.arange(1, 20000), [[opt.rate(i) for opt in opts] for i in range(1, 20000)])
-# plt.legend(["512:4000", "512:8000", "256:4000"])
-# plt.show()
-
-
 class LabelSmoothing(nn.Module):
     "Implement label smoothing."
 
@@ -202,8 +194,6 @@ def greedy_decode(model, src, src_mask, max_len, start_symbol):
         return ys
 
 
-
-
 class MultiGPULossCompute:
     "A multi-gpu loss compute and train function."
 
@@ -263,7 +253,7 @@ class MultiGPULossCompute:
 
 
 # GPUs to use
-devices = [0, 1]
+devices = [0]
 pad_idx = TGT.vocab.stoi["<blank>"]
 model = make_model(len(SRC.vocab), len(TGT.vocab), N=6)
 model.cuda()
@@ -319,6 +309,7 @@ def valid_bleu_store():
         print(len(references), 'references len')
         print('are_bleu:%.4f' % arg_bleu)
         total_bleu.append(arg_bleu)
+        print('i = ',i)
     print('total_bleu:%.4f:' % (sum(total_bleu) / len(total_bleu)))
     return sum(total_bleu) / len(total_bleu)
 

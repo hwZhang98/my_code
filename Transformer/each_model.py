@@ -40,7 +40,7 @@ class EncoderDecoder(nn.Module):
         return self.decode(self.encode(src, src_mask), src_mask, tgt, tgt_mask)
 
     def encode(self, src, src_mask):
-        return self.encoder(self.src_embed(src), src_mask)
+        return self.encoder(self.src_embed(src), src_mask)   # mask 没变但是src经过了embed编码层
 
     def decode(self, memory, src_mask, tgt, tgt_mask):
         # memory 是解码器传过来的隐层中间状态
@@ -228,11 +228,14 @@ class PositionwiseFeedForward(nn.Module):
 class Embeddings(nn.Module):
     def __init__(self, d_model, vocab):
         super(Embeddings, self).__init__()
-        self.lut = nn.Embedding(vocab, d_model)
+        self.lut = nn.Embedding(vocab, d_model)         # 如果字典尺寸超过了Emebed最大尺寸会报错，这里的尺寸为58000左右
         self.d_model = d_model
 
     def forward(self, x):
-        x = x.to(torch.long)
+        # x = x.to(torch.long)
+        y = self.lut(x)
+        a = math.sqrt(self.d_model)
+        c = y * a
         return self.lut(x) * math.sqrt(self.d_model)
 
 
