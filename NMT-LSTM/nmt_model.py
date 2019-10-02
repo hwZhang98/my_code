@@ -402,6 +402,7 @@ class NMT(nn.Module):
         hypotheses = [['<s>']]
         hyp_scores = torch.zeros(len(hypotheses), dtype=torch.float, device=self.device)
         completed_hypotheses = []
+        src_encodings.size(1),
 
         t = 0
         while len(completed_hypotheses) < beam_size and t < max_decoding_time_step:
@@ -409,8 +410,7 @@ class NMT(nn.Module):
             hyp_num = len(hypotheses)
 
             exp_src_encodings = src_encodings.expand(hyp_num,
-                                                     src_encodings.size(1),
-                                                     src_encodings.size(2))
+                                                          src_encodings.size(2))
 
             exp_src_encodings_att_linear = src_encodings_att_linear.expand(hyp_num,
                                     src_encodings_att_linear.size(1),

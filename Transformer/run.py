@@ -9,9 +9,9 @@ import time
 from tensorboardX import SummaryWriter
 from nltk.translate import bleu_score
 import os
-from data_loading import  *
+from data_loading import *
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 
 # 代码出处:http://nlp.seas.harvard.edu/2018/04/03/attention.html
@@ -194,6 +194,89 @@ def greedy_decode(model, src, src_mask, max_len, start_symbol):
         return ys
 
 
+def BeamSearchInfer(model, memory, src, src_mask, beam_size, pro_seq, alpha):
+    '''
+    input : shape(1,seq_length+1)  第一个位置为当前句子的分数
+    :param model:
+    :param memory:
+    :param src:
+    :param src_mask:
+    :param beam_size:   集束尺寸
+    :param pro_seq:  预测结束的当前句子
+    :param alpha:  惩罚因子
+    :return: shape(beam_size,seq_length+2)
+    '''
+    with torch.no_grad():
+        ys = pro_seq[:, 1:]  # shape(1,seq_length)去掉当前句子第一位的分数，把剩余token当作输入进行下一个词的预测
+        out = model.decode(memory, src_mask, ys, subsequent_mask(ys.size(1)).type_as(src.data))
+        prob = model.generator(out[:, -1])
+        next_words_value, next_words = prob.data.topk(beam_size)  # shape(beam_size,1)
+        pro_seq = pro_seq[:, 0].expand(beam_size, pro_seq.shape[1]) + next_words_value[:, 0]  # 加上预测词的分数
+        pro_seq = torch.cat((pro_seq, next_words), dim=1)
+        for i in range(beam_size):
+            pro_seq[i, 0] -= (i - 1) * alpha  # 再减去惩罚因子
+    return pro_seq  # shape(beam_size,squ_length+2)
+
+
+def BeamSearch(model, src, src_mask, max_len, start_symbol, beam_size):
+    '''
+    input: (batch_size,src_len)
+    :param model:
+    :param src:
+    :param src_mask:
+    :param max_len:
+    :param start_symbol:
+    :param beam_size:
+    :return: (batch_size,max_len)
+    '''
+
+    with torch.no_grad():
+        batch_size = src.shape[0]
+        result = torch.empty((1, max_len))
+        memory = model.encode(src, src_mask)
+        final_seq = [[] for i in range(batch_size)]  # 最终的结果列表
+        ys = torch.ones(batch_size, 1).fill_(start_symbol).type_as(src.data)
+        out = model.decode(memory, src_mask, ys, subsequent_mask(ys.size(1)).type_as(src.data))
+        prob = model.generator(out[:, -1])
+        next_values, next_words = prob.data.topk(beam_size)
+        ys.unsqueeze(dim=2).expand((batch_size, beam_size, 1))  # shape(batch_size,beam_size,1)
+        next_words.unsqueeze(dim=2)
+        tem_score = next_words.unsqueeze(dim=2)  # 每个句子的第一个位置放入当前句子的分数
+        sample = torch.cat((tem_score, ys, next_words), dim=2)  # shape(batch_size,beam_size,squ_length+1)
+        dead_size = torch.zeros((batch_size))
+        for i in range(batch_size):
+            sample_seq = sample[i, i * beam_size:(i + 1) * beam_size, :].squeeze(dim=0)
+            for j in range(4, max_len + 1):  # 此时句子中已经有了 【分数，开始符，第一个预测词】
+                if len(final_seq[i]) == beam_size:  # 当前句子的预测最终句子的数量满足beam_size，则退出循环
+                    break
+                tem = torch.empty((1, j))
+                for k in range(sample_seq.shape[0]):  # 对当前句子的预测句子分别预测接下来的词
+                    tem = torch.cat(
+                        (tem, BeamSearchInfer(model, memory, src, src_mask, beam_size, sample[:][j], alpha=0.5)), dim=1)
+                    # shape(beam_size*(beam_size-dead_size),seq_length)
+                list = tem.tolist().sort(key=lambda x: x[:][0], reverse=True)
+                sample_seq = list[:beam_size - dead_size]
+                # 选出分数最大的前beam_size-dead_size个,dead_size为已经到达末尾且被选中的句子个数
+                for j in range(sample_seq.shape[0]):
+                    if sample_seq[j][-1] == TGT.vocab.stoi["</s>"]:
+                        final_seq[i].append(sample_seq[j])
+                        sample_seq.remove(sample_seq[j])
+                        dead_size += 1
+            max = float('-inf')
+            sign = 0
+            for j in range(beam_size):  # 求出最终句子中的最大分值的句子
+                final_seq[i][j][0] = final_seq[i][j][0] / (len(final_seq[i][j]) - 1)
+                if final_seq[i][j][0] >= max:
+                    sign = j
+                    max = final_seq[i][j][0]
+            next_seq = np.array(final_seq[i][sign])  # 转为numpy进行处理
+            next_seq = np.delete(next_seq, 0, axis=2)  # 删除分数那一列
+            mask = np.zeros((1, 1, max_len - next_seq.shape[2]))  # 补全为max_len的长度
+            next_seq = np.hstack((next_seq, mask))  # 拼接
+            result = torch.cat((result, torch.from_numpy(next_seq).squeeze(dim=1)), dim=1)  # 加入到result中  shape(batch_size,max_len)
+        return result
+
+
 class MultiGPULossCompute:
     "A multi-gpu loss compute and train function."
 
@@ -263,23 +346,23 @@ BATCH_SIZE = 4000  # 每批的句子个数
 # train_iter = MyIterator(train, batch_size=BATCH_SIZE, device=0,
 #                         repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
 #                         batch_size_fn=batch_size_fn, train=True)
-# valid_iter = MyIterator(val, batch_size=BATCH_SIZE, device=0,
-#                         repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
-#                         batch_size_fn=batch_size_fn, train=False)
-train_WMT14_iter = MyIterator(dataset, batch_size=BATCH_SIZE, device=0,
-                              repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
-                              batch_size_fn=batch_size_fn, train=True)
+valid_iter = MyIterator(val, batch_size=BATCH_SIZE, device=0,
+                        repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
+                        batch_size_fn=batch_size_fn, train=False)
+# train_WMT14_iter = MyIterator(dataset, batch_size=BATCH_SIZE, device=0,
+#                               repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
+#                               batch_size_fn=batch_size_fn, train=True)
 
 model_par = nn.DataParallel(model, device_ids=devices)
 
 
 def valid_bleu_store():
     total_bleu = []
-    for i, batch in enumerate(train_WMT14_iter):  # 完整测试
+    for i, batch in enumerate(valid_iter):  # 完整测试
         src = batch.src.transpose(0, 1).cuda()  # src ['i','am','a','man','.']
         trg = batch.trg.transpose(0, 1).cuda()  # trg ['<start>','ha','ha']
         src_mask = (src != SRC.vocab.stoi["<blank>"]).unsqueeze(-2).cuda()
-        out = greedy_decode(model, src, src_mask,  # out ['<start>','ha','ha']
+        out = BeamSearch(model, src, src_mask,  # out ['<start>','ha','ha']
                             max_len=60, start_symbol=TGT.vocab.stoi["<s>"])
         # print("Translation:", end="\t")
         hypothesis = [[] for _ in range(out.shape[0])]
@@ -309,7 +392,7 @@ def valid_bleu_store():
         print(len(references), 'references len')
         print('are_bleu:%.4f' % arg_bleu)
         total_bleu.append(arg_bleu)
-        print('i = ',i)
+        print('i = ', i)
     print('total_bleu:%.4f:' % (sum(total_bleu) / len(total_bleu)))
     return sum(total_bleu) / len(total_bleu)
 
@@ -322,7 +405,7 @@ if i:
     for epoch in range(10):
         print('train', epoch)
         model_par.train()
-        run_epoch((rebatch(pad_idx, b) for b in train_WMT14_iter),
+        run_epoch((rebatch(pad_idx, b) for b in valid_iter),
                   model_par,
                   MultiGPULossCompute(model.generator, criterion,
                                       devices=devices, opt=model_opt))
